@@ -13,7 +13,7 @@ from configs import Configs
 from recommender import FileReader
 from schema import TrackModel
 from utils import SessionMaker, group_query_result
-from glo_vars import CALCULATE_STATUS
+from glo_vars import CALCULATE_STATUS, INDICES, REVERSED_INDICES
 
 app = FastAPI()
 
@@ -60,7 +60,7 @@ async def update_csv(
 @app.get("/recommend")
 async def recommend(track_id: int, count: int = 6):
     try:
-        track_index = reversed_indices[track_id]
+        track_index = REVERSED_INDICES[track_id]
     except KeyError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -68,13 +68,17 @@ async def recommend(track_id: int, count: int = 6):
         )
     sims = linecache.getline(Configs.FILES.similarity_model, track_index + 1)
     sims = eval(sims)[:count]
-    tracks = indices.iloc[[s[0] for s in sims]]
+    tracks = INDICES.iloc[[s[0] for s in sims]]
     return tracks.track_id.to_list()
 
 
 if __name__ == '__main__':
-    indices = pandas.read_csv(Configs.FILES.indices_path, names=["track_id", "index"])
-    reversed_indices = pandas.Series(indices["index"].values, index=indices["track_id"])
+    """
+    项目启动时，从文件中读取索引和反向索引。
+    当数据更新时，更新成功后，要把索引对象替换为更新后的
+    """
+    INDICES = pandas.read_csv(Configs.FILES.indices_path, names=["track_id", "index"])
+    REVERSED_INDICES = pandas.Series(INDICES["index"].values, index=INDICES["track_id"])
 
     import uvicorn
 

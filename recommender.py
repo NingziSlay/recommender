@@ -28,12 +28,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from configs import Configs
 from pyspark import SparkConf, SparkContext
 
-from glo_vars import CALCULATE_STATUS
+from glo_vars import CALCULATE_STATUS, INDICES, REVERSED_INDICES
 from schema import TrackModel
 from utils import Singleton
-
-MODEL = None
-INDICES = None
 
 
 def get_features(items: pd.DataFrame):
@@ -191,7 +188,9 @@ if __name__ == '__main__':
     result.collect()
     with open(Configs.FILES.similarity_model, "w") as f:
         for r in result:
-            f.write(r[1])
+            f.write(f"{r[1]}\n")
 
-    global CALCULATE_STATUS
+    # global CALCULATE_STATUS, INDICES, REVERSED_INDICES
     CALCULATE_STATUS = False
+    INDICES = pd.Series(tracks.id, index=tracks.index)
+    REVERSED_INDICES = indices
