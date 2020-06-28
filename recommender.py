@@ -34,69 +34,64 @@ MODEL = None
 INDICES = None
 
 
-class Similarity(metaclass=Singleton):
-    def __init__(self):
-        self.conf = SparkConf().setAppName(Configs.SparkConfig.AppName).setMaster(Configs.SparkConfig.Master)
-        self.sc = SparkContext(conf=self.conf)
+def get_features(items: pd.DataFrame):
+    vector = CountVectorizer()
+    vocabulary = vector.fit(items.clean.values.astype("U")).vocabulary_
+    tfidf_vector = TfidfVectorizer(vocabulary=vocabulary)
+    features = tfidf_vector.fit_transform(items.clean.values.astype("U"))
+    return features
 
-    @staticmethod
-    def get_features(items: pd.DataFrame):
-        vector = CountVectorizer()
-        vocabulary = vector.fit(items.clean.values.astype("U")).vocabulary_
-        tfidf_vector = TfidfVectorizer(vocabulary=vocabulary)
-        features = tfidf_vector.fit_transform(items.clean.values.astype("U"))
-        return features
 
-    def broadcast_matrix(self, mat: csr_matrix):
-        """原矩阵广播到多个 workers，等待分片后的每个子矩阵做相似度计算
-        """
-        casted = self.sc.broadcast((mat.data, mat.indices, mat.indptr))
-        (data, indices, indptr) = casted.value
-        casted_mat: csr_matrix = csr_matrix((data, indices, indptr), shape=mat.shape)
-        return casted_mat
+def broadcast_matrix(mat: csr_matrix):
+    """原矩阵广播到多个 workers，等待分片后的每个子矩阵做相似度计算
+    """
+    casted = sc.broadcast((mat.data, mat.indices, mat.indptr))
+    (data, indices, indptr) = casted.value
+    casted_mat: csr_matrix = csr_matrix((data, indices, indptr), shape=mat.shape)
+    return casted_mat
 
-    def parallelize_matrix(self, scipy_mat: csr_matrix, rows_per_chunk=100, num_slices=50):
-        """将特征矩阵分片，分割成多个 slices，分发给多个 worker
-        """
-        [rows, cols] = scipy_mat.shape
-        i = 0
-        sub_matrices = list()
-        while i < rows:
-            current_chunk_size = min(rows_per_chunk, rows - i)
-            sub_mat: csr_matrix = scipy_mat[i: (i + current_chunk_size)]
-            sub_matrices.append(
-                (i, (sub_mat.data, sub_mat.indices, sub_mat.indptr), (current_chunk_size, cols))
-            )
-            i += current_chunk_size
-        return self.sc.parallelize(sub_matrices, numSlices=num_slices)
 
-    @staticmethod
-    def find_matches_in_sub_matrix(sources: csr_matrix, targets: csr_matrix, input_start_index: int):
-        """分割后的子矩阵与原矩阵做余弦相似度计算，最后在汇总在一起
-        """
-        co_similarities = cosine_similarity(sources, targets)
-        for i, similarity in enumerate(co_similarities):
-            source_index = i + input_start_index
-            # 自身不出现在推荐列表中，直接删除的话会弄乱其他元素的 index，
-            # 这里把自身的值改为 -1，排序的时候排到最后～
-            similarity[source_index] = -1
-            similarity = sorted(enumerate(similarity), key=lambda x: x[1], reverse=True)[:10]
-            yield source_index, similarity
-
-    def calculate(self, features):
-        """
-        """
-        mat_b = self.broadcast_matrix(features)
-        mat_a = self.parallelize_matrix(features)
-        result = mat_a.flatMap(
-            lambda sub_matrix: self.find_matches_in_sub_matrix(
-                csr_matrix(sub_matrix[1], shape=sub_matrix[2]),
-                mat_b,
-                sub_matrix[0]
-            )
+def parallelize_matrix(scipy_mat: csr_matrix, rows_per_chunk=100, num_slices=50):
+    """将特征矩阵分片，分割成多个 slices，分发给多个 worker
+    """
+    [rows, cols] = scipy_mat.shape
+    i = 0
+    sub_matrices = list()
+    while i < rows:
+        current_chunk_size = min(rows_per_chunk, rows - i)
+        sub_mat: csr_matrix = scipy_mat[i: (i + current_chunk_size)]
+        sub_matrices.append(
+            (i, (sub_mat.data, sub_mat.indices, sub_mat.indptr), (current_chunk_size, cols))
         )
-        result.persist()
-        return result.collect()
+        i += current_chunk_size
+    return sc.parallelize(sub_matrices, numSlices=num_slices)
+
+
+def find_matches_in_sub_matrix(sources: csr_matrix, targets: csr_matrix, input_start_index: int):
+    """分割后的子矩阵与原矩阵做余弦相似度计算，最后在汇总在一起
+    """
+    co_similarities = cosine_similarity(sources, targets)
+    for i, similarity in enumerate(co_similarities):
+        source_index = i + input_start_index
+        # 自身不出现在推荐列表中，直接删除的话会弄乱其他元素的 index，
+        # 这里把自身的值改为 -1，排序的时候排到最后～
+        similarity[source_index] = -1
+        similarity = sorted(enumerate(similarity), key=lambda x: x[1], reverse=True)[:10]
+        yield source_index, similarity
+
+
+def calculate(a, b):
+    """
+    """
+    result = a.flatMap(
+        lambda sub_matrix: find_matches_in_sub_matrix(
+            csr_matrix(sub_matrix[1], shape=sub_matrix[2]),
+            b,
+            sub_matrix[0]
+        )
+    )
+    result.persist()
+    return result.collect()
 
 
 class FileReader(metaclass=Singleton):
@@ -180,9 +175,26 @@ class FileReader(metaclass=Singleton):
 
 
 if __name__ == '__main__':
-    f = FileReader()
-    s = Similarity()
+    import findspark
 
-    items = f.read_and_clean()
-    features = s.get_features(items)
-    s.calculate(features)
+    findspark.init()
+    conf = SparkConf().setAppName(Configs.SparkConfig.AppName).setMaster(Configs.SparkConfig.Master)
+    sc = SparkContext(conf=conf)
+
+    f = FileReader()
+
+    tracks = f.read_and_clean()
+    w2v = get_features(tracks)
+
+    a_mat = parallelize_matrix(w2v)
+    b_mat = broadcast_matrix(w2v)
+
+    result = a_mat.flatMap(
+        lambda sub_matrix: find_matches_in_sub_matrix(
+            csr_matrix(sub_matrix[1], shape=sub_matrix[2]),
+            b_mat,
+            sub_matrix[0]
+        )
+    )
+
+    print(result.collect())
