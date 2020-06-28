@@ -13,6 +13,7 @@ import csv
 import logging
 import os
 import re
+import subprocess
 import time
 
 import jieba
@@ -27,6 +28,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from configs import Configs
 from pyspark import SparkConf, SparkContext
 
+from glo_vars import CALCULATE_STATUS
 from schema import TrackModel
 from utils import Singleton
 
@@ -78,20 +80,6 @@ def find_matches_in_sub_matrix(sources: csr_matrix, targets: csr_matrix, input_s
         similarity[source_index] = -1
         similarity = sorted(enumerate(similarity), key=lambda x: x[1], reverse=True)[:10]
         yield source_index, similarity
-
-
-def calculate(a, b):
-    """
-    """
-    result = a.flatMap(
-        lambda sub_matrix: find_matches_in_sub_matrix(
-            csr_matrix(sub_matrix[1], shape=sub_matrix[2]),
-            b,
-            sub_matrix[0]
-        )
-    )
-    result.persist()
-    return result.collect()
 
 
 class FileReader(metaclass=Singleton):
@@ -171,6 +159,7 @@ class FileReader(metaclass=Singleton):
                     details = track.artist + track.desc + "".join(
                         tag.name for tag in track.tags if tag.name is not None)
                     csv_writer.writerow([track.track_id, details])
+        subprocess.run(["python", "-m", "recommender"])
         logging.info(f"{time.strftime('%X')}-> 写入完成.")
 
 
@@ -186,6 +175,9 @@ if __name__ == '__main__':
     tracks = f.read_and_clean()
     w2v = get_features(tracks)
 
+    indices = pd.Series(tracks.index, index=tracks["id"])
+    indices.to_csv(Configs.FILES.indices_path)
+
     a_mat = parallelize_matrix(w2v)
     b_mat = broadcast_matrix(w2v)
 
@@ -196,5 +188,10 @@ if __name__ == '__main__':
             sub_matrix[0]
         )
     )
+    result.collect()
+    with open(Configs.FILES.similarity_model, "w") as f:
+        for r in result:
+            f.write(r[1])
 
-    print(result.collect())
+    global CALCULATE_STATUS
+    CALCULATE_STATUS = False
