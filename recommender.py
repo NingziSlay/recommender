@@ -10,6 +10,7 @@ coolvox 的物品相似度推荐
 
 """
 import csv
+import linecache
 import logging
 import os
 import re
@@ -28,7 +29,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from configs import Configs
 from pyspark import SparkConf, SparkContext
 
-from glo_vars import CALCULATE_STATUS, INDICES, REVERSED_INDICES
+from glo_vars import global_vars
 from schema import TrackModel
 from utils import Singleton
 
@@ -156,8 +157,17 @@ class FileReader(metaclass=Singleton):
                     details = track.artist + track.desc + "".join(
                         tag.name for tag in track.tags if tag.name is not None)
                     csv_writer.writerow([track.track_id, details])
-        subprocess.run(["python", "-m", "recommender"])
         logging.info(f"{time.strftime('%X')}-> 写入完成.")
+
+
+def update(data: typing.List[TrackModel]):
+    file = FileReader()
+    file.write_to_csv(data)
+    subprocess.run(["python", "-m", "recommender"])
+    global_vars.update_indices()
+    global_vars.CALCULATE_STATUS = False
+    linecache.clearcache()
+    logging.info("updated.")
 
 
 if __name__ == '__main__':
@@ -173,7 +183,7 @@ if __name__ == '__main__':
     w2v = get_features(tracks)
 
     indices = pd.Series(tracks.index, index=tracks["id"])
-    indices.to_csv(Configs.FILES.indices_path)
+    indices.to_csv(Configs.FILES.indices_path, header=False)
 
     a_mat = parallelize_matrix(w2v)
     b_mat = broadcast_matrix(w2v)
@@ -185,12 +195,7 @@ if __name__ == '__main__':
             sub_matrix[0]
         )
     )
-    result.collect()
+    result = result.collect()
     with open(Configs.FILES.similarity_model, "w") as f:
         for r in result:
             f.write(f"{r[1]}\n")
-
-    # global CALCULATE_STATUS, INDICES, REVERSED_INDICES
-    CALCULATE_STATUS = False
-    INDICES = pd.Series(tracks.id, index=tracks.index)
-    REVERSED_INDICES = indices
