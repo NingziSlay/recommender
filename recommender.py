@@ -25,33 +25,34 @@ from filelock import FileLock
 from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sqlalchemy.orm import Session
 
 from configs import Configs
-from pyspark import SparkConf, SparkContext
+from pyspark import SparkConf, SparkContext, RDD
 
-from glo_vars import global_vars
+from Globals import global_vars
 from schema import TrackModel
-from utils import Singleton
+from utils import Singleton, group_query_result
 
 
 def get_features(items: pd.DataFrame):
+    """计算文本特征的接口
+    """
     vector = CountVectorizer()
     vocabulary = vector.fit(items.clean.values.astype("U")).vocabulary_
     tfidf_vector = TfidfVectorizer(vocabulary=vocabulary)
-    features = tfidf_vector.fit_transform(items.clean.values.astype("U"))
-    return features
+    return tfidf_vector.fit_transform(items.clean.values.astype("U"))
 
 
-def broadcast_matrix(mat: csr_matrix):
+def broadcast_matrix(mat: csr_matrix) -> csr_matrix:
     """原矩阵广播到多个 workers，等待分片后的每个子矩阵做相似度计算
     """
     casted = sc.broadcast((mat.data, mat.indices, mat.indptr))
-    (data, indices, indptr) = casted.value
-    casted_mat: csr_matrix = csr_matrix((data, indices, indptr), shape=mat.shape)
-    return casted_mat
+    (data, idc, indptr) = casted.value
+    return csr_matrix((data, idc, indptr), shape=mat.shape)
 
 
-def parallelize_matrix(scipy_mat: csr_matrix, rows_per_chunk=100, num_slices=50):
+def parallelize_matrix(scipy_mat: csr_matrix, rows_per_chunk=100, num_slices=50) -> RDD:
     """将特征矩阵分片，分割成多个 slices，分发给多个 worker
     """
     [rows, cols] = scipy_mat.shape
@@ -84,29 +85,21 @@ class FileReader(metaclass=Singleton):
     """
     中文分词，做 TF-IDF 特种提取
     """
-    _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super().__new__(cls, *args, **kwargs)
-        return cls._instance
 
     def __init__(
             self,
             file: str = Configs.FILES.track_path,
-            clean_file: str = Configs.FILES.clean_track_path
     ):
         self.file = file
-        self.clean_file = clean_file
         self.lock = FileLock(os.path.join(Configs.BASE_DIR, "data/file.lock"))
 
     def read_and_clean(self) -> pd.DataFrame:
         """读取原始歌曲信息的 csv 表
         格式应为:
-            1,  somewords
-            2,  somewords
+            id-1,  somewords
+            id-2,  somewords
             ...
-            n,  somewords
+            id-n,  somewords
         读取数据后会清理无用字符，然后使用 jieba 分词库将 details 字段分成使用 " " 连接的字符串
         并添加到 clean 的字段上
         将处理完的数据保存到 'clean_tracks.csv' 文件里
@@ -129,19 +122,6 @@ class FileReader(metaclass=Singleton):
             return " ".join(jieba.cut(line))
 
         items["clean"] = items.details.apply(_clean)
-        items.to_csv(self.clean_file, index=False)
-        return items
-
-    def read(self) -> pd.DataFrame:
-        """读取经过处理后的 tracks 表
-        期待的文件格式应为：
-            id, details, clean
-            1,  somewords, some words
-            2,  somewords, some words
-            ...
-            n,  somewords, some words
-        """
-        items = pd.read_csv(self.clean_file)
         return items
 
     def write_to_csv(self, data: typing.List[TrackModel]):
@@ -151,8 +131,8 @@ class FileReader(metaclass=Singleton):
         logging.info(f"{time.strftime('%X')}-> 开始写入 csv 任务, 共 {len(data)} 条数据...")
         self.lock.timeout = -1
         with self.lock:
-            with open(self.file, "w") as f:
-                csv_writer = csv.writer(f)
+            with open(self.file, "w") as fw:
+                csv_writer = csv.writer(fw)
                 for track in data:
                     details = track.artist + track.desc + "".join(
                         tag.name for tag in track.tags if tag.name is not None)
@@ -160,17 +140,40 @@ class FileReader(metaclass=Singleton):
         logging.info(f"{time.strftime('%X')}-> 写入完成.")
 
 
-def update(data: typing.List[TrackModel]):
+def UpdateSimilarityModel(session: Session, limit: int = 0):
+    """
+    """
+    query_string = """
+    select t.id as 'track_id',
+           artist,
+           `desc`,
+           tag.name
+    from (select id, artist, `desc` from track {}) t
+             left outer join track_tag_rel ttr on t.id = ttr.track_id
+             left outer join tag on ttr.tag_id = tag.id
+    """
+    if limit:
+        query = query_string.format(f"limit {limit}")
+    else:
+        query = query_string.format("")
+
+    query_result = session.execute(query)
+    track_group = group_query_result(query_result, group_field="track_id")
+    track_model = [TrackModel(**track_list[0], tags=track_list) for track_list in track_group]
+
     file = FileReader()
-    file.write_to_csv(data)
+    file.write_to_csv(track_model)
     subprocess.run(["python", "-m", "recommender"])
-    global_vars.update_indices()
+
+    # 更新索引，更新计算状态，删除文件缓存
+    global_vars.init_indices()
     global_vars.CALCULATE_STATUS = False
     linecache.clearcache()
     logging.info("updated.")
 
 
 if __name__ == '__main__':
+    logging.info("run spark task...")
     import findspark
 
     findspark.init()
@@ -196,6 +199,10 @@ if __name__ == '__main__':
         )
     )
     result = result.collect()
+    sc.stop()
+    logging.info("spark task done.")
+
+    logging.info("writing the similarity model to file...")
     with open(Configs.FILES.similarity_model, "w") as f:
         for r in result:
             f.write(f"{r[1]}\n")

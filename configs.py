@@ -21,7 +21,6 @@ class _SparkConfig(BaseModel):
 
 class _Files(BaseModel):
     track_path: str = os.path.join(_BASE_DIR, "data/track.csv")
-    clean_track_path: str = os.path.join(_BASE_DIR, "data/clean_track.csv")
     similarity_model: str = os.path.join(_BASE_DIR, "data/similarity_model")
     indices_path: str = os.path.join(_BASE_DIR, "data/indices.csv")
 
@@ -35,6 +34,10 @@ class BaseConfig(BaseSettings):
 
     class Config:
         case_sensitive = True
+
+
+class ProdConfigs(BaseConfig):
+    pass
 
 
 class DevConfigs(BaseConfig):
