@@ -28,7 +28,7 @@ class _Files(BaseModel):
 class BaseConfig(BaseSettings):
     SparkConfig: _SparkConfig
     DB_URL: AnyUrl
-    REDIS_URL: RedisDsn
+    # REDIS_URL: RedisDsn
     BASE_DIR: str = _BASE_DIR
     FILES: _Files = _Files()
 
@@ -40,17 +40,27 @@ class ProdConfigs(BaseConfig):
     pass
 
 
+class TestConfigs(BaseConfig):
+    SparkConfig = _SparkConfig(
+        AppName="test",
+        Master="spark://spark-master.star-test.svc.cluster.local:7077"
+    )
+    DB_URL = "mysql+pymysql://root:root@192.168.0.18/coolvox_api?charset=utf8mb4&use_unicode=1"
+
+
 class DevConfigs(BaseConfig):
     SparkConfig: _SparkConfig = _SparkConfig(AppName="demo", Master="spark://192.168.0.174:7077")
     DB_URL: AnyUrl = "mysql+pymysql://root:root@192.168.0.11:3306/coolvox_dev?charset=utf8mb4&use_unicode=1"
-    REDIS_URL: RedisDsn = "redis://192.168.0.11:6379/1"
+    # REDIS_URL: RedisDsn = "redis://192.168.0.11:6379/1"
 
 
 def GetSettings(env: str) -> BaseConfig:
     if env == "dev":
         return DevConfigs()
+    elif env == "test":
+        return TestConfigs()
     elif env == "prod":
         raise NotImplementedError
 
 
-Configs: BaseConfig = GetSettings(os.environ.get("ENVIRON", "dev"))
+Configs: BaseConfig = GetSettings(os.environ.get("ENVIRONMENT", "dev"))
