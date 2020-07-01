@@ -19,6 +19,7 @@ class GlobalVars(object):
         self._CALCULATE_STATUS = False
         self._INDICES = None
         self._REVERSED_INDICES = None
+        self._DATA = None
 
     @property
     def CALCULATE_STATUS(self):
@@ -39,6 +40,12 @@ class GlobalVars(object):
     def init_indices(self):
         self._INDICES = pd.read_csv(Configs.FILES.indices_path, names=["track_id", "index"])
         self._REVERSED_INDICES = pd.Series(self._INDICES["index"].values, index=self._INDICES["track_id"])
+
+    @property
+    def DATA(self):
+        if self._DATA is None:
+            self._DATA = pd.read_csv(Configs.FILES.track_path, names=["track_id", "description"])
+        return self._DATA
 
 
 global_vars = GlobalVars()

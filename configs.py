@@ -40,14 +40,6 @@ class ProdConfigs(BaseConfig):
     pass
 
 
-class TestConfigs(BaseConfig):
-    SparkConfig = _SparkConfig(
-        AppName="test",
-        Master="spark://spark-master.star-test.svc.cluster.local:7077"
-    )
-    DB_URL = "mysql+pymysql://root:root@192.168.0.18/coolvox_api?charset=utf8mb4&use_unicode=1"
-
-
 class DevConfigs(BaseConfig):
     SparkConfig: _SparkConfig = _SparkConfig(AppName="demo", Master="spark://192.168.0.174:7077")
     DB_URL: AnyUrl = "mysql+pymysql://root:root@192.168.0.11:3306/coolvox_dev?charset=utf8mb4&use_unicode=1"
@@ -57,8 +49,6 @@ class DevConfigs(BaseConfig):
 def GetSettings(env: str) -> BaseConfig:
     if env == "dev":
         return DevConfigs()
-    elif env == "test":
-        return TestConfigs()
     elif env == "prod":
         raise NotImplementedError
 

@@ -9,8 +9,7 @@ from starlette import status
 from starlette.background import BackgroundTasks
 from configs import Configs
 from recommender import UpdateSimilarityModel
-from schema import TrackModel
-from utils import SessionMaker, group_query_result
+from utils import SessionMaker
 from Globals import global_vars
 
 app = FastAPI()
@@ -42,12 +41,19 @@ async def recommend(track_id: int, count: int = Query(6, le=10, gt=0)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source Not Found"
         )
+
+    target = global_vars.DATA.loc[track_index]
+    target = f"{target.track_id}: {target.description}"
+
     sims = linecache.getline(Configs.FILES.similarity_model, track_index + 1)
     if not sims:
         return []
     sims = eval(sims.strip())[:count]
-    tracks = global_vars.INDICES.iloc[[s[0] for s in sims]]
-    return tracks.track_id.to_list()
+    result = global_vars.DATA.loc[[s[0] for s in sims]]
+    matches = list(map(lambda x, y: f"{x}: {y}", result.track_id, result.description))
+    return dict(target=target, matches=matches)
+    # tracks = global_vars.INDICES.iloc[[s[0] for s in sims]]
+    # return tracks.track_id.to_list()
 
 
 if __name__ == '__main__':
